@@ -1,8 +1,3 @@
-- name: Debug time
-  run: |
-    echo "Current UTC time: $(date -u)"
-    echo "Cron was scheduled to run at this hour."
-
 name: 钉钉每日日程推送
 
 on:
