@@ -1,0 +1,31 @@
+name: 钉钉每日日程推送
+
+on:
+  schedule:
+    # 北京时间工作日 16:00 (UTC 8:00) 执行，对应 8:00 AM UTC
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  push-schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 运行推送脚本
+        env:
+          DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
+          DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
+          DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
+          DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+        run: python dingtalk_calendar_bot.py
