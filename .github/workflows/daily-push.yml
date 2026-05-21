@@ -2,8 +2,8 @@ name: 钉钉每日日程推送
 
 on:
   schedule:
-    # 北京时间工作日 16:00 (UTC 8:00) 执行，对应 8:00 AM UTC
-    - cron: '0 0 * * 1-5'
+    # 北京时间每日 8:00 (UTC 0:00) 执行，对应 8:00 AM UTC
+    - cron: '0 0 * * *'
   workflow_dispatch:  # 支持手动触发
 
 jobs:
