@@ -1,16 +1,23 @@
 name: 钉钉每日日程推送
 
 on:
-  schedule:
-    # 北京时间每日 8:00 (UTC 0:00) 执行，对应 8:00 AM UTC
-    - cron: '00 00 * * *'
-    # 北京时间每工作日 22:00 (UTC 14:00) 执行，对应 10:00 PM UTC
-    - cron: '00 14 * * 1-5'
+  # ❌ 移除原生 schedule（有延迟问题）
+  # schedule:
+  #   - cron: '00 00 * * *'
+  #   - cron: '00 14 * * 1-5'
 
+  # ✅ 保留 workflow_dispatch 用于外部 API 精确触发
+  workflow_dispatch:
+    inputs:
+      push_type:
+        description: '推送类型 (morning/evening/manual)'
+        required: false
+        default: 'auto'
+        type: string
+
+  # ✅ 保留 repository_dispatch 作为备用触发方式
   repository_dispatch:
-    types: [cron-trigger]       # 外部触发的事件类型
-    
-  workflow_dispatch:  # 支持手动触发
+    types: [cron-trigger]
 
 jobs:
   push-schedule:
@@ -34,4 +41,5 @@ jobs:
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
           DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          PUSH_TYPE: ${{ github.event.inputs.push_type || 'auto' }}  # 接收触发参数
         run: python dingtalk_calendar_bot.py
