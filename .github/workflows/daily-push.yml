@@ -1,16 +1,10 @@
 name: 钉钉每日日程推送
 
 on:
-  # 通过 cron-job.org 等外部服务精确触发（需配置 repository_dispatch）
+  # 仅由 cron-job.org 通过 repository_dispatch 精确触发
   repository_dispatch:
     types: [scheduled-run]
-  # 保留 GitHub 原生定时作为备用（存在 5~15 分钟延迟）
-  schedule:
-    # 北京时间每日 8:00 (UTC 0:00)
-    - cron: '0 0 * * *'
-    # 北京时间工作日 22:00 (UTC 14:00)
-    - cron: '0 14 * * 1-5'
-  # 保留手动触发
+  # 保留手动触发作为调试备用
   workflow_dispatch:
 
 jobs:
