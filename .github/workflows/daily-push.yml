@@ -1,6 +1,6 @@
 name: 钉钉每日日程推送
 
-on:
+于:
   # 仅由 cron-job.org 通过 repository_dispatch 精确触发
   repository_dispatch:
     types: [scheduled-run]
@@ -23,10 +23,13 @@ jobs:
         run: pip install requests
 
       - name: 运行推送脚本
-        env:
+       env:
           DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
           DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
+          WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
+          WEATHER_CITY: ${{ secrets.WEATHER_CITY }}
         run: python dingtalk_calendar_bot.py
