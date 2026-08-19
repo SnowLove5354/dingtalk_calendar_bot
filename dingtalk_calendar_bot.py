@@ -3,9 +3,8 @@
 """
 钉钉订阅日历推送 + 多城市天气（高德）GitHub Actions 版
 功能：拉取钉钉订阅日历今日/明日日程，获取多个城市天气，通过机器人推送 Markdown 消息。
-运行环境：GitHub Actions（或本地设置环境变量）
+所有配置必须通过环境变量提供，无默认值。
 """
-
 import os
 import sys
 import time
@@ -22,25 +21,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------- 从环境变量读取配置（GitHub Secrets） ----------
-def get_env(key: str, required: bool = True) -> str:
-    value = os.getenv(key, "")
-    if required and not value:
+# ---------- 强制环境变量读取 ----------
+REQUIRED_ENV = [
+    "DINGTALK_APP_KEY",
+    "DINGTALK_APP_SECRET",
+    "DINGTALK_USER_ID",
+    "DINGTALK_CALENDAR_ID",
+    "DINGTALK_WEBHOOK_URL",
+    "WEATHER_API_KEY",
+    "WEATHER_CITIES",
+]
+
+def get_config(key: str) -> str:
+    value = os.getenv(key)
+    if not value:
         logger.error("缺少必要环境变量：%s", key)
         sys.exit(1)
     return value
 
-DINGTALK_APP_KEY = get_env("DINGTALK_APP_KEY")
-DINGTALK_APP_SECRET = get_env("DINGTALK_APP_SECRET")
-USER_ID = get_env("DINGTALK_USER_ID")
-CALENDAR_ID = get_env("DINGTALK_CALENDAR_ID")
-WEBHOOK_URL = get_env("DINGTALK_WEBHOOK_URL")
-WEATHER_API_KEY = get_env("WEATHER_API_KEY", required=False)  # 可选
-WEATHER_CITIES = get_env("WEATHER_CITIES", required=False)
-WEATHER_CITY = get_env("WEATHER_CITY", required=False)
+# 读取强制配置
+DINGTALK_APP_KEY = get_config("DINGTALK_APP_KEY")
+DINGTALK_APP_SECRET = get_config("DINGTALK_APP_SECRET")
+USER_ID = get_config("DINGTALK_USER_ID")
+CALENDAR_ID = get_config("DINGTALK_CALENDAR_ID")
+WEBHOOK_URL = get_config("DINGTALK_WEBHOOK_URL")
+WEATHER_API_KEY = get_config("WEATHER_API_KEY")
+WEATHER_CITIES = get_config("WEATHER_CITIES")
+
+# 可选：单城市配置
+WEATHER_CITY = os.getenv("WEATHER_CITY", "")
 
 # ---------- 工具函数：解析城市条目 ----------
 def parse_city_entry(entry: str) -> Tuple[str, Optional[str]]:
+    """
+    解析城市条目，支持格式: 查询城市名[:显示名称]
+    返回 (查询城市名, 显示名称或None)
+    """
     if not entry:
         return "", None
     entry = entry.strip()
@@ -100,6 +116,7 @@ def format_events(events: List[Dict]) -> str:
     lines = []
 
     def fmt_datetime(value):
+        """解析钉钉返回的时间字符串，只取 HH:MM"""
         if not value:
             return ""
         try:
@@ -109,6 +126,7 @@ def format_events(events: List[Dict]) -> str:
 
     for i, ev in enumerate(events, 1):
         title = ev.get("summary") or ev.get("title") or "未命名日程"
+
         start_obj = ev.get("start") or {}
         end_obj = ev.get("end") or {}
 
@@ -117,19 +135,21 @@ def format_events(events: List[Dict]) -> str:
         start_date = start_obj.get("date")
         end_date = end_obj.get("date")
 
-        # 1. 定时日程
+        # 1. 定时日程：dateTime 字段有值
         if start_dt and end_dt:
             time_range = f"{fmt_datetime(start_dt)}-{fmt_datetime(end_dt)}"
-        # 2. 全天日程（含跨日）
+        # 2. 全天日程：date 字段有值
         elif start_date and end_date:
             if start_date == end_date:
                 time_range = "全天"
             else:
                 time_range = f"全天（{start_date} ~ {end_date}）"
+        # 3. 兜底
         else:
             time_range = "全天"
 
         loc = (ev.get("location") or {}).get("displayName", "")
+
         lines.append(
             f"**{i}. {title}**  \n"
             f"   ⏰ {time_range}  \n"
@@ -144,7 +164,11 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None) -> 
         return None
     try:
         url = "https://restapi.amap.com/v3/weather/weatherInfo"
-        params = {"key": api_key, "city": city, "extensions": "base"}
+        params = {
+            "key": api_key,
+            "city": city,
+            "extensions": "base"
+        }
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
@@ -198,7 +222,7 @@ def send_markdown(webhook: str, title: str, content: str) -> bool:
     text = (
         f"### {title}\n\n"
         f"{content}\n\n---\n"
-        f"> 🤖 钉钉日历机器人自动推送\n"
+        f"> 🤖 钉钉日历机器人手动推送\n"
         f"> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     payload = {
@@ -232,14 +256,14 @@ def get_query_range():
 
 # ---------- 主流程 ----------
 def main():
-    logger.info("开始执行钉钉日历推送任务")
+    logger.info("开始执行本地日历推送任务")
     try:
         # 1. 获取日程
         start_utc, end_utc, target_date = get_query_range()
         union_id = get_unionid(USER_ID)
         events = get_events(union_id, CALENDAR_ID, start_utc, end_utc)
 
-        # 2. 获取天气
+        # 2. 获取天气（优先使用多城市，否则单城市）
         if WEATHER_CITIES:
             weather_str = get_weather_multi(WEATHER_CITIES, WEATHER_API_KEY)
         elif WEATHER_CITY:
@@ -248,11 +272,11 @@ def main():
         else:
             weather_str = None
 
-        # 3. 组装消息
+        # 3. 组装消息内容
         content_parts = []
         if weather_str:
             content_parts.append(weather_str)
-            content_parts.append("")
+            content_parts.append("")  # 空行分隔
         content_parts.append("**📅 日程安排**  \n" + format_events(events))
         content = "\n".join(content_parts)
 
