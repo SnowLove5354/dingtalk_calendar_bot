@@ -1,11 +1,11 @@
 name: 钉钉每日日程推送
 
-on:
+于:
   # 方式一：GitHub 内置定时（UTC 时间）
   schedule:
     # 每天北京时间 07:00 和 21:00 触发（UTC 23:00 和 13:00）
-    - cron: '0 23 * * *'
-    - cron: '0 13 * * *'
+  # - cron: '0 23 * * *'
+   # - cron: '0 13 * * *'
 
   # 方式二：外部精确调度（cron-job.org 可触发此事件）
   repository_dispatch:
