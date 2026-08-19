@@ -1,29 +1,33 @@
 name: 钉钉每日日程推送
 
-于:
-  # 仅由 cron-job.org 通过 repository_dispatch 精确触发
+on:
+  # 方式一：GitHub 内置定时（UTC 时间）
+  schedule:
+    # 每天北京时间 07:00 和 21:00 触发（UTC 23:00 和 13:00）
+    - cron: '0 23 * * *'
+    - cron: '0 13 * * *'
+
+  # 方式二：外部精确调度（cron-job.org 可触发此事件）
   repository_dispatch:
-    types: [scheduled-run]
-  # 保留手动触发作为调试备用
-  workflow_dispatch:
+    types: [trigger-calendar-push]
 
 jobs:
-  push-schedule:
+  push:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置 Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 安装依赖
+      - name: Install dependencies
         run: pip install requests
 
-      - name: 运行推送脚本
-       env:
+      - name: Run calendar push
+        env:
           DINGTALK_APP_KEY: ${{ secrets.DINGTALK_APP_KEY }}
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
@@ -31,5 +35,6 @@ jobs:
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
-          WEATHER_CITY: ${{ secrets.WEATHER_CITY }}
-        run: python dingtalk_calendar_bot.py
+          # 可选：如需单城市，可取消注释并添加对应 Secret
+          # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}
+        run: python dingtalk_calendar_ga.py
