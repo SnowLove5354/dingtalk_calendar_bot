@@ -33,4 +33,4 @@ jobs:
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
           # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选
-        run: python dingtalk_calendar_ga.py
+        run: python dingtalk_calendar_bot.py
