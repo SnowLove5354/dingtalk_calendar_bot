@@ -3,8 +3,8 @@
 """
 钉钉订阅日历推送机器人 (GitHub Actions 版)
 功能: 根据运行时间自动推送当天/次日日程 + 多城市天气（高德）
-- 白天（<21点）：当日实时天气 + 当日日程
-- 晚上（>=21点）：次日天气预报 + 次日日程
+- 白天（<21点）：当日实时天气 + 当日定时日程（不含全天）
+- 晚上（>=21点）：次日天气预报 + 次日定时日程（不含全天）
 - 自动识别是否在预设时间（08:00 或 22:00）运行，消息尾部显示对应标识
 """
 
@@ -38,21 +38,14 @@ WEATHER_CITY = os.getenv("WEATHER_CITY", "")
 
 # ---------- 判断是否在预设时间运行 ----------
 def is_scheduled_run() -> bool:
-    """
-    判断当前北京时间是否在预设的自动运行时间附近（08:00 或 22:00，容差 ±15 分钟）
-    """
-    # 获取当前北京时间
     beijing_now = datetime.utcnow() + timedelta(hours=8)
     current_minutes = beijing_now.hour * 60 + beijing_now.minute
-
-    # 预设时间（分钟数）
     scheduled_times = [8 * 60, 22 * 60]  # 08:00 和 22:00
-    tolerance = 5  # 容差分钟数
-
+    tolerance = 15  # 容差分钟数
     for target in scheduled_times:
         if abs(current_minutes - target) <= tolerance:
-            logger.info("当前时间 %02d:%02d 在预定时间 %02d:00 附近（容差±%d分钟），视为自动运行",
-                        beijing_now.hour, beijing_now.minute, target//60, tolerance)
+            logger.info("当前时间 %02d:%02d 在预定时间 %02d:00 附近，视为自动运行",
+                        beijing_now.hour, beijing_now.minute, target//60)
             return True
     logger.info("当前时间 %02d:%02d 不在预设自动运行时间内，视为手动运行",
                 beijing_now.hour, beijing_now.minute)
@@ -114,12 +107,23 @@ class DingTalkCalendarClient:
         events = data.get("events") or data.get("result", {}).get("events", [])
         return events
 
-# ---------- 日程格式化 ----------
+# ---------- 日程格式化（过滤全天日程） ----------
 def format_events(events: List[Dict]) -> str:
-    if not events:
-        return "✅ 暂无日程安排，祝你顺利！🎉"
+    # 过滤：只保留有 dateTime 的定时日程（排除全天事件）
+    filtered = []
+    for ev in events:
+        start = ev.get("start", {})
+        if isinstance(start, dict) and start.get("dateTime"):
+            filtered.append(ev)
+        else:
+            # 跳过全天日程（只有 date 字段）
+            logger.debug("跳过全天日程: %s", ev.get("summary", "未命名"))
+
+    if not filtered:
+        return "✅ 今日无定时日程安排，祝你顺利！🎉"
+
     lines = []
-    for i, ev in enumerate(events, 1):
+    for i, ev in enumerate(filtered, 1):
         title = ev.get("summary") or ev.get("title") or "未命名日程"
         start = ev.get("start", {})
         end = ev.get("end", {})
@@ -128,8 +132,8 @@ def format_events(events: List[Dict]) -> str:
                 return datetime.fromisoformat(t.replace("Z", "+00:00")).strftime("%H:%M")
             except:
                 return ""
-        start_str = fmt(start.get("dateTime", start.get("date", ""))) if isinstance(start, dict) else ""
-        end_str = fmt(end.get("dateTime", end.get("date", ""))) if isinstance(end, dict) else ""
+        start_str = fmt(start.get("dateTime", "")) if isinstance(start, dict) else ""
+        end_str = fmt(end.get("dateTime", "")) if isinstance(end, dict) else ""
         time_range = f"{start_str}-{end_str}" if start_str and end_str else "全天"
         loc = ev.get("location", {})
         loc_display = loc.get("displayName", "") if isinstance(loc, dict) else ""
@@ -256,7 +260,7 @@ def get_query_range():
 # ---------- 主函数 ----------
 def main():
     logger.info("开始执行日历推送任务")
-    scheduled = is_scheduled_run()  # 根据时间判断是否自动运行
+    scheduled = is_scheduled_run()
     logger.info("运行模式: %s", "自动（预定时间）" if scheduled else "手动（非预定时间）")
 
     client = DingTalkCalendarClient()
@@ -264,7 +268,7 @@ def main():
 
     union_id = client.get_user_unionid(USER_ID)
     events = client.get_events(union_id, CALENDAR_ID, start_utc, end_utc)
-    logger.info("获取到 %d 条日程", len(events))
+    logger.info("获取到 %d 条日程（含全天）", len(events))
 
     weather_str = None
     if WEATHER_CITIES:
@@ -273,11 +277,14 @@ def main():
         city_query, display_name = parse_city_entry(WEATHER_CITY)
         weather_str = get_weather(city_query, WEATHER_API_KEY, display_name, target_date)
 
+    # 格式化日程（自动过滤全天）
+    schedule_text = format_events(events)
+
     content_parts = []
     if weather_str:
         content_parts.append(weather_str)
         content_parts.append("")
-    content_parts.append("**📅 日程安排**  \n" + format_events(events))
+    content_parts.append("**📅 日程安排**  \n" + schedule_text)
     content = "\n\n".join(content_parts)
 
     title = f"📅 日程提醒 - {target_date.strftime('%m月%d日')}"
