@@ -1,52 +1,51 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-钉钉订阅日历推送 + 多城市天气（高德）GitHub Actions 版
-- 根据北京时间 21 点自动切换查询今日/明日日程
-- 天气：今日查实时，明日查预报
-- 自动识别运行模式，显示对应推送标识
-所有配置通过环境变量提供。
+钉钉订阅日历推送机器人 (GitHub Actions 版)
+功能: 根据运行时间自动推送当天/次日日程 + 多城市天气（高德）
+- 白天（<21点）：当日实时天气 + 当日日程
+- 晚上（>=21点）：次日天气预报 + 次日日程
+- 自动识别运行模式，消息尾部显示对应标识
 """
+
 import os
 import sys
 import time
 import logging
 import requests
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import List, Dict, Optional, Tuple
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout,
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-# ---------- 检测运行模式 ----------
+# ---------- 运行模式检测 ----------
 def is_auto_run() -> bool:
     """判断是否在自动化环境（如 GitHub Actions）中运行"""
-    # GitHub Actions 设置 GITHUB_ACTIONS=true，常见 CI 设置 CI=true
     return os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true"
 
-# ---------- 强制环境变量读取 ----------
-def get_config(key: str) -> str:
+# ---------- 环境变量读取 ----------
+def get_env_or_fail(key: str) -> str:
     value = os.getenv(key)
     if not value:
-        logger.error("缺少必要环境变量：%s", key)
+        logger.error("环境变量 %s 未设置", key)
         sys.exit(1)
     return value
 
-DINGTALK_APP_KEY = get_config("DINGTALK_APP_KEY")
-DINGTALK_APP_SECRET = get_config("DINGTALK_APP_SECRET")
-USER_ID = get_config("DINGTALK_USER_ID")
-CALENDAR_ID = get_config("DINGTALK_CALENDAR_ID")
-WEBHOOK_URL = get_config("DINGTALK_WEBHOOK_URL")
-WEATHER_API_KEY = get_config("WEATHER_API_KEY")
-WEATHER_CITIES = get_config("WEATHER_CITIES")
+DINGTALK_APP_KEY = get_env_or_fail("DINGTALK_APP_KEY")
+DINGTALK_APP_SECRET = get_env_or_fail("DINGTALK_APP_SECRET")
+USER_ID = get_env_or_fail("DINGTALK_USER_ID")
+CALENDAR_ID = get_env_or_fail("DINGTALK_CALENDAR_ID")
+WEBHOOK_URL = get_env_or_fail("DINGTALK_WEBHOOK_URL")
+# 天气相关（必填）
+WEATHER_API_KEY = get_env_or_fail("WEATHER_API_KEY")
+WEATHER_CITIES = get_env_or_fail("WEATHER_CITIES")   # 格式: "城市编码:显示名;城市编码:显示名"
+# 可选单城市（若WEATHER_CITIES为空，可单独使用WEATHER_CITY）
 WEATHER_CITY = os.getenv("WEATHER_CITY", "")
 
 # ---------- 工具函数 ----------
 def parse_city_entry(entry: str) -> Tuple[str, Optional[str]]:
+    """解析城市条目，格式：查询城市名[:显示名称]，返回 (查询名, 显示名)"""
     if not entry:
         return "", None
     entry = entry.strip()
@@ -56,93 +55,90 @@ def parse_city_entry(entry: str) -> Tuple[str, Optional[str]]:
     return entry, None
 
 # ---------- 钉钉 Token 管理 ----------
-class TokenManager:
+class DingTalkTokenManager:
     _token_info: Dict = {}
     @classmethod
-    def get_token(cls) -> str:
+    def get_access_token(cls) -> str:
         now = time.time()
         if cls._token_info.get("token") and cls._token_info.get("expires_at", 0) > now + 60:
             return cls._token_info["token"]
-        logger.info("获取 access_token...")
+        logger.info("获取新版 access_token...")
         url = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
         payload = {"appKey": DINGTALK_APP_KEY, "appSecret": DINGTALK_APP_SECRET}
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
+        if "accessToken" not in data:
+            raise ValueError(f"响应无 accessToken: {data}")
         token = data["accessToken"]
-        cls._token_info = {"token": token, "expires_at": now + data.get("expireIn", 7200) - 300}
+        expires_in = data.get("expireIn", 7200)
+        cls._token_info = {"token": token, "expires_at": now + expires_in - 300}
+        logger.info("access_token 获取成功，有效期 %d 秒", expires_in)
         return token
 
-def get_unionid(user_id: str) -> str:
-    url = "https://oapi.dingtalk.com/topapi/v2/user/get"
-    params = {"access_token": TokenManager.get_token()}
-    payload = {"userid": user_id}
-    resp = requests.post(url, params=params, json=payload, timeout=10)
-    data = resp.json()
-    if data.get("errcode") != 0:
-        raise Exception(f"获取 unionId 失败: {data.get('errmsg')}")
-    return data["result"]["unionid"]
+# ---------- 钉钉日历客户端 ----------
+class DingTalkCalendarClient:
+    BASE_URL = "https://api.dingtalk.com/v1.0"
+    def _get_headers(self):
+        return {"x-acs-dingtalk-access-token": DingTalkTokenManager.get_access_token(), "Content-Type": "application/json"}
 
-def get_events(union_id: str, calendar_id: str, time_min: str, time_max: str) -> List[Dict]:
-    headers = {
-        "x-acs-dingtalk-access-token": TokenManager.get_token(),
-        "Content-Type": "application/json",
-    }
-    params = {"timeMin": time_min, "timeMax": time_max}
-    url = f"https://api.dingtalk.com/v1.0/calendar/users/{union_id}/calendars/{calendar_id}/events"
-    resp = requests.get(url, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("events") or data.get("result", {}).get("events", [])
+    def get_user_unionid(self, user_id: str) -> str:
+        url = "https://oapi.dingtalk.com/topapi/v2/user/get"
+        params = {"access_token": DingTalkTokenManager.get_access_token()}
+        payload = {"userid": user_id}
+        resp = requests.post(url, params=params, json=payload, timeout=10)
+        data = resp.json()
+        if data.get("errcode") != 0:
+            raise Exception(f"获取 unionId 失败: {data.get('errmsg')}")
+        return data["result"]["unionid"]
 
-# ---------- 格式化日程（原始版本，无去重） ----------
+    def get_events(self, union_id: str, calendar_id: str, time_min: str, time_max: str) -> List[Dict]:
+        params = {"timeMin": time_min, "timeMax": time_max}
+        url = f"{self.BASE_URL}/calendar/users/{union_id}/calendars/{calendar_id}/events"
+        resp = requests.get(url, headers=self._get_headers(), params=params, timeout=15)
+        data = resp.json()
+        events = data.get("events") or data.get("result", {}).get("events", [])
+        return events
+
+# ---------- 日程格式化 ----------
 def format_events(events: List[Dict]) -> str:
     if not events:
         return "✅ 暂无日程安排，祝你顺利！🎉"
-
     lines = []
-    def fmt_datetime(value):
-        if not value:
-            return ""
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
-        except Exception:
-            return value
-
     for i, ev in enumerate(events, 1):
         title = ev.get("summary") or ev.get("title") or "未命名日程"
-        start_obj = ev.get("start") or {}
-        end_obj = ev.get("end") or {}
-        start_dt = start_obj.get("dateTime")
-        end_dt = end_obj.get("dateTime")
-        start_date = start_obj.get("date")
-        end_date = end_obj.get("date")
-        if start_dt and end_dt:
-            time_range = f"{fmt_datetime(start_dt)}-{fmt_datetime(end_dt)}"
-        elif start_date and end_date:
-            if start_date == end_date:
-                time_range = "全天"
-            else:
-                time_range = f"全天（{start_date} ~ {end_date}）"
-        else:
-            time_range = "全天"
-        loc = (ev.get("location") or {}).get("displayName", "")
-        lines.append(
-            f"**{i}. {title}**  \n"
-            f"   ⏰ {time_range}  \n"
-            f"   📍 {loc or '未指定地点'}"
-        )
+        start = ev.get("start", {})
+        end = ev.get("end", {})
+        def fmt(t):
+            try:
+                return datetime.fromisoformat(t.replace("Z", "+00:00")).strftime("%H:%M")
+            except:
+                return ""
+        start_str = fmt(start.get("dateTime", start.get("date", ""))) if isinstance(start, dict) else ""
+        end_str = fmt(end.get("dateTime", end.get("date", ""))) if isinstance(end, dict) else ""
+        time_range = f"{start_str}-{end_str}" if start_str and end_str else "全天"
+        loc = ev.get("location", {})
+        loc_display = loc.get("displayName", "") if isinstance(loc, dict) else ""
+        lines.append(f"**{i}. {title}**  \n⏰ {time_range}  \n📍 {loc_display or '未指定地点'}")
     return "\n\n".join(lines)
 
-# ---------- 天气查询（支持今日实时 / 明日预报）----------
-def get_weather(city: str, api_key: str, display_name: Optional[str] = None, target_date: Optional[datetime.date] = None) -> Optional[str]:
+# ---------- 天气查询（高德）----------
+def get_weather(city: str, api_key: str, display_name: Optional[str] = None,
+                target_date: Optional[datetime.date] = None) -> Optional[str]:
+    """
+    查询天气：
+    - 若 target_date == 今天：使用实时天气（extensions=base）
+    - 否则：使用预报（extensions=all），提取 target_date 的白天天气
+    """
     if not api_key or not city:
         return None
     today = datetime.now().date()
     if target_date is None:
         target_date = today
+
     try:
         if target_date == today:
+            # 实时天气
             url = "https://restapi.amap.com/v3/weather/weatherInfo"
             params = {"key": api_key, "city": city, "extensions": "base"}
             resp = requests.get(url, params=params, timeout=10)
@@ -168,6 +164,7 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None, tar
                 f"   🕒 更新：{report_time}"
             )
         else:
+            # 预报天气
             url = "https://restapi.amap.com/v3/weather/weatherInfo"
             params = {"key": api_key, "city": city, "extensions": "all"}
             resp = requests.get(url, params=params, timeout=10)
@@ -189,6 +186,7 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None, tar
             night_temp = cast.get("nighttemp", "N/A")
             day_wind = cast.get("daywind", "未知")
             day_power = cast.get("daypower", "N/A")
+            # 友好显示
             if target_date == today + timedelta(days=1):
                 label = "明日"
             elif target_date == today + timedelta(days=2):
@@ -206,7 +204,9 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None, tar
         logger.error("获取 %s 天气失败: %s", city, e)
         return None
 
-def get_weather_multi(cities_str: str, api_key: str, target_date: Optional[datetime.date] = None) -> Optional[str]:
+def get_weather_multi(cities_str: str, api_key: str,
+                      target_date: Optional[datetime.date] = None) -> Optional[str]:
+    """查询多个城市天气，用 ; 分隔"""
     if not api_key or not cities_str:
         return None
     entries = [e.strip() for e in cities_str.split(";") if e.strip()]
@@ -222,74 +222,68 @@ def get_weather_multi(cities_str: str, api_key: str, target_date: Optional[datet
             weather_parts.append(weather)
     return "\n\n".join(weather_parts) if weather_parts else None
 
-# ---------- 推送消息（支持自动/手动标识） ----------
-def send_markdown(webhook: str, title: str, content: str, auto: bool = False) -> bool:
-    # 根据运行模式设置尾部消息
+# ---------- 消息推送（支持自动/手动标识） ----------
+def send_markdown(webhook_url: str, title: str, content: str, auto: bool = False) -> bool:
     footer = "🤖 钉钉日历机器人自动推送" if auto else "🤖 钉钉日历机器人手动推送"
-    text = (
-        f"### {title}\n\n"
-        f"{content}\n\n---\n"
-        f"> {footer}\n"
-        f"> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {"title": title, "text": text},
-        "at": {"atMobiles": [], "isAtAll": False},
-    }
-    resp = requests.post(webhook, json=payload, timeout=10)
-    result = resp.json()
-    if result.get("errcode") == 0:
-        logger.info("推送成功")
-        return True
-    else:
-        logger.error("推送失败: %s", result.get("errmsg"))
-        return False
+    text = f"### {title}\n\n{content}\n\n---\n> {footer}\n> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    payload = {"msgtype": "markdown", "markdown": {"title": title, "text": text}, "at": {"atMobiles": [], "isAtAll": False}}
+    resp = requests.post(webhook_url, json=payload, timeout=10)
+    return resp.json().get("errcode") == 0
 
+# ---------- 查询时间范围（自动判断今日/明日） ----------
 def get_query_range():
+    """根据北京时间自动判断查询今日或明日，返回 UTC 时间范围字符串和目标日期"""
     utc_now = datetime.utcnow()
     beijing_now = utc_now + timedelta(hours=8)
     if beijing_now.hour >= 21:
         target_date = beijing_now.date() + timedelta(days=1)
+        logger.info("当前北京时间 %02d:00，已过21点，查询明日日程", beijing_now.hour)
     else:
         target_date = beijing_now.date()
+        logger.info("当前北京时间 %02d:00，未到21点，查询今日日程", beijing_now.hour)
     beijing_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0)
     beijing_end = beijing_start + timedelta(days=1)
     start_utc = beijing_start - timedelta(hours=8)
     end_utc = beijing_end - timedelta(hours=8)
-    return start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), target_date
+    start_str = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    logger.info("查询目标日期: %s, UTC 范围: %s ~ %s", target_date, start_str, end_str)
+    return start_str, end_str, target_date
 
+# ---------- 主函数 ----------
 def main():
     logger.info("开始执行日历推送任务")
     auto = is_auto_run()
     logger.info("运行模式: %s", "自动" if auto else "手动")
-    try:
-        start_utc, end_utc, target_date = get_query_range()
-        union_id = get_unionid(USER_ID)
-        events = get_events(union_id, CALENDAR_ID, start_utc, end_utc)
 
-        if WEATHER_CITIES:
-            weather_str = get_weather_multi(WEATHER_CITIES, WEATHER_API_KEY, target_date)
-        elif WEATHER_CITY:
-            city_query, display_name = parse_city_entry(WEATHER_CITY)
-            weather_str = get_weather(city_query, WEATHER_API_KEY, display_name, target_date)
-        else:
-            weather_str = None
+    client = DingTalkCalendarClient()
+    start_utc, end_utc, target_date = get_query_range()
 
-        content_parts = []
-        if weather_str:
-            content_parts.append(weather_str)
-            content_parts.append("")
-        content_parts.append("**📅 日程安排**  \n" + format_events(events))
-        content = "\n".join(content_parts)
+    # 1. 获取日程
+    union_id = client.get_user_unionid(USER_ID)
+    events = client.get_events(union_id, CALENDAR_ID, start_utc, end_utc)
+    logger.info("获取到 %d 条日程", len(events))
 
-        title = f"📅 每日提醒 - {target_date.strftime('%m月%d日')}"
-        if not send_markdown(WEBHOOK_URL, title, content, auto):
-            sys.exit(1)
-        logger.info("推送完成")
-    except Exception as e:
-        logger.error("任务失败: %s", e, exc_info=True)
+    # 2. 获取天气（传入目标日期）
+    weather_str = None
+    if WEATHER_CITIES:
+        weather_str = get_weather_multi(WEATHER_CITIES, WEATHER_API_KEY, target_date)
+    elif WEATHER_CITY:
+        city_query, display_name = parse_city_entry(WEATHER_CITY)
+        weather_str = get_weather(city_query, WEATHER_API_KEY, display_name, target_date)
+
+    # 3. 组装内容
+    content_parts = []
+    if weather_str:
+        content_parts.append(weather_str)
+        content_parts.append("")  # 空行分隔
+    content_parts.append("**📅 日程安排**  \n" + format_events(events))
+    content = "\n\n".join(content_parts)
+
+    title = f"📅 日程提醒 - {target_date.strftime('%m月%d日')}"
+    if not send_markdown(WEBHOOK_URL, title, content, auto):
         sys.exit(1)
+    logger.info("推送成功")
 
 if __name__ == "__main__":
     main()
