@@ -4,7 +4,7 @@
 钉钉订阅日历推送 + 多城市天气（高德）GitHub Actions 版
 - 根据北京时间 21 点自动切换查询今日/明日日程
 - 天气：今日查实时，明日查预报
-- 去重：基于事件 ID 或关键信息组合，避免重复日程显示
+- 自动识别运行模式，显示对应推送标识
 所有配置通过环境变量提供。
 """
 import os
@@ -21,6 +21,12 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+# ---------- 检测运行模式 ----------
+def is_auto_run() -> bool:
+    """判断是否在自动化环境（如 GitHub Actions）中运行"""
+    # GitHub Actions 设置 GITHUB_ACTIONS=true，常见 CI 设置 CI=true
+    return os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true"
 
 # ---------- 强制环境变量读取 ----------
 def get_config(key: str) -> str:
@@ -89,34 +95,10 @@ def get_events(union_id: str, calendar_id: str, time_min: str, time_max: str) ->
     data = resp.json()
     return data.get("events") or data.get("result", {}).get("events", [])
 
-# -------------------- 修改点：format_events 增加去重逻辑 --------------------
+# ---------- 格式化日程（原始版本，无去重） ----------
 def format_events(events: List[Dict]) -> str:
     if not events:
         return "✅ 暂无日程安排，祝你顺利！🎉"
-
-    # ---------- 去重 ----------
-    seen = set()
-    unique_events = []
-    for ev in events:
-        # 优先使用事件 id
-        ev_id = ev.get("id")
-        if ev_id:
-            key = ev_id
-        else:
-            # 降级方案：根据关键字段组合生成唯一键
-            summary = ev.get("summary") or ev.get("title") or ""
-            start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date") or ""
-            end = ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date") or ""
-            loc = (ev.get("location") or {}).get("displayName", "")
-            key = f"{summary}|{start}|{end}|{loc}"
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_events.append(ev)
-
-    # 如果去重后没有事件，返回无日程
-    if not unique_events:
-        return "✅ 暂无日程安排（去重后），祝你顺利！🎉"
 
     lines = []
     def fmt_datetime(value):
@@ -127,7 +109,7 @@ def format_events(events: List[Dict]) -> str:
         except Exception:
             return value
 
-    for i, ev in enumerate(unique_events, 1):
+    for i, ev in enumerate(events, 1):
         title = ev.get("summary") or ev.get("title") or "未命名日程"
         start_obj = ev.get("start") or {}
         end_obj = ev.get("end") or {}
@@ -240,11 +222,14 @@ def get_weather_multi(cities_str: str, api_key: str, target_date: Optional[datet
             weather_parts.append(weather)
     return "\n\n".join(weather_parts) if weather_parts else None
 
-def send_markdown(webhook: str, title: str, content: str) -> bool:
+# ---------- 推送消息（支持自动/手动标识） ----------
+def send_markdown(webhook: str, title: str, content: str, auto: bool = False) -> bool:
+    # 根据运行模式设置尾部消息
+    footer = "🤖 钉钉日历机器人自动推送" if auto else "🤖 钉钉日历机器人手动推送"
     text = (
         f"### {title}\n\n"
         f"{content}\n\n---\n"
-        f"> 🤖 钉钉日历机器人手动推送\n"
+        f"> {footer}\n"
         f"> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     payload = {
@@ -276,6 +261,8 @@ def get_query_range():
 
 def main():
     logger.info("开始执行日历推送任务")
+    auto = is_auto_run()
+    logger.info("运行模式: %s", "自动" if auto else "手动")
     try:
         start_utc, end_utc, target_date = get_query_range()
         union_id = get_unionid(USER_ID)
@@ -297,7 +284,7 @@ def main():
         content = "\n".join(content_parts)
 
         title = f"📅 每日提醒 - {target_date.strftime('%m月%d日')}"
-        if not send_markdown(WEBHOOK_URL, title, content):
+        if not send_markdown(WEBHOOK_URL, title, content, auto):
             sys.exit(1)
         logger.info("推送完成")
     except Exception as e:
