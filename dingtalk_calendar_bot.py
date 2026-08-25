@@ -3,7 +3,8 @@
 """
 钉钉订阅日历推送 + 多城市天气（高德）GitHub Actions 版
 - 根据北京时间 21 点自动切换查询今日/明日日程
-- 天气：今日查实时，明日查预报（显示次日天气）
+- 天气：今日查实时，明日查预报
+- 去重：基于事件 ID 或关键信息组合，避免重复日程显示
 所有配置通过环境变量提供。
 """
 import os
@@ -88,9 +89,35 @@ def get_events(union_id: str, calendar_id: str, time_min: str, time_max: str) ->
     data = resp.json()
     return data.get("events") or data.get("result", {}).get("events", [])
 
+# -------------------- 修改点：format_events 增加去重逻辑 --------------------
 def format_events(events: List[Dict]) -> str:
     if not events:
         return "✅ 暂无日程安排，祝你顺利！🎉"
+
+    # ---------- 去重 ----------
+    seen = set()
+    unique_events = []
+    for ev in events:
+        # 优先使用事件 id
+        ev_id = ev.get("id")
+        if ev_id:
+            key = ev_id
+        else:
+            # 降级方案：根据关键字段组合生成唯一键
+            summary = ev.get("summary") or ev.get("title") or ""
+            start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date") or ""
+            end = ev.get("end", {}).get("dateTime") or ev.get("end", {}).get("date") or ""
+            loc = (ev.get("location") or {}).get("displayName", "")
+            key = f"{summary}|{start}|{end}|{loc}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_events.append(ev)
+
+    # 如果去重后没有事件，返回无日程
+    if not unique_events:
+        return "✅ 暂无日程安排（去重后），祝你顺利！🎉"
+
     lines = []
     def fmt_datetime(value):
         if not value:
@@ -99,7 +126,8 @@ def format_events(events: List[Dict]) -> str:
             return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
         except Exception:
             return value
-    for i, ev in enumerate(events, 1):
+
+    for i, ev in enumerate(unique_events, 1):
         title = ev.get("summary") or ev.get("title") or "未命名日程"
         start_obj = ev.get("start") or {}
         end_obj = ev.get("end") or {}
@@ -126,20 +154,13 @@ def format_events(events: List[Dict]) -> str:
 
 # ---------- 天气查询（支持今日实时 / 明日预报）----------
 def get_weather(city: str, api_key: str, display_name: Optional[str] = None, target_date: Optional[datetime.date] = None) -> Optional[str]:
-    """
-    查询天气：
-    - 若 target_date 为今天：使用实时天气（extensions=base）
-    - 若 target_date 为明天：使用预报（extensions=all），提取 target_date 的白天天气
-    """
     if not api_key or not city:
         return None
     today = datetime.now().date()
     if target_date is None:
         target_date = today
-
     try:
         if target_date == today:
-            # ----- 实时天气（今日）-----
             url = "https://restapi.amap.com/v3/weather/weatherInfo"
             params = {"key": api_key, "city": city, "extensions": "base"}
             resp = requests.get(url, params=params, timeout=10)
@@ -165,7 +186,6 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None, tar
                 f"   🕒 更新：{report_time}"
             )
         else:
-            # ----- 预报天气（明日或未来）-----
             url = "https://restapi.amap.com/v3/weather/weatherInfo"
             params = {"key": api_key, "city": city, "extensions": "all"}
             resp = requests.get(url, params=params, timeout=10)
@@ -187,7 +207,6 @@ def get_weather(city: str, api_key: str, display_name: Optional[str] = None, tar
             night_temp = cast.get("nighttemp", "N/A")
             day_wind = cast.get("daywind", "未知")
             day_power = cast.get("daypower", "N/A")
-            # 友好显示：如果 target_date 是明天，显示“明日”
             if target_date == today + timedelta(days=1):
                 label = "明日"
             elif target_date == today + timedelta(days=2):
@@ -243,7 +262,6 @@ def send_markdown(webhook: str, title: str, content: str) -> bool:
         return False
 
 def get_query_range():
-    """返回 (start_utc, end_utc, target_date)"""
     utc_now = datetime.utcnow()
     beijing_now = utc_now + timedelta(hours=8)
     if beijing_now.hour >= 21:
@@ -263,7 +281,6 @@ def main():
         union_id = get_unionid(USER_ID)
         events = get_events(union_id, CALENDAR_ID, start_utc, end_utc)
 
-        # 获取天气（传入 target_date，今日实时 / 明日预报）
         if WEATHER_CITIES:
             weather_str = get_weather_multi(WEATHER_CITIES, WEATHER_API_KEY, target_date)
         elif WEATHER_CITY:
