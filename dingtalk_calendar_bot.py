@@ -5,7 +5,7 @@
 功能: 根据运行时间自动推送当天/次日日程 + 多城市天气（高德）
 - 白天（<21点）：当日实时天气 + 当日日程
 - 晚上（>=21点）：次日天气预报 + 次日日程
-- 自动识别运行模式，消息尾部显示对应标识
+- 自动识别是否在预设时间（08:00 或 22:00）运行，消息尾部显示对应标识
 """
 
 import os
@@ -18,11 +18,6 @@ from typing import List, Dict, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
-
-# ---------- 运行模式检测 ----------
-def is_auto_run() -> bool:
-    """判断是否在自动化环境（如 GitHub Actions）中运行"""
-    return os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true"
 
 # ---------- 环境变量读取 ----------
 def get_env_or_fail(key: str) -> str:
@@ -40,6 +35,28 @@ WEBHOOK_URL = get_env_or_fail("DINGTALK_WEBHOOK_URL")
 WEATHER_API_KEY = get_env_or_fail("WEATHER_API_KEY")
 WEATHER_CITIES = get_env_or_fail("WEATHER_CITIES")
 WEATHER_CITY = os.getenv("WEATHER_CITY", "")
+
+# ---------- 判断是否在预设时间运行 ----------
+def is_scheduled_run() -> bool:
+    """
+    判断当前北京时间是否在预设的自动运行时间附近（08:00 或 22:00，容差 ±15 分钟）
+    """
+    # 获取当前北京时间
+    beijing_now = datetime.utcnow() + timedelta(hours=8)
+    current_minutes = beijing_now.hour * 60 + beijing_now.minute
+
+    # 预设时间（分钟数）
+    scheduled_times = [8 * 60, 22 * 60]  # 08:00 和 22:00
+    tolerance = 5  # 容差分钟数
+
+    for target in scheduled_times:
+        if abs(current_minutes - target) <= tolerance:
+            logger.info("当前时间 %02d:%02d 在预定时间 %02d:00 附近（容差±%d分钟），视为自动运行",
+                        beijing_now.hour, beijing_now.minute, target//60, tolerance)
+            return True
+    logger.info("当前时间 %02d:%02d 不在预设自动运行时间内，视为手动运行",
+                beijing_now.hour, beijing_now.minute)
+    return False
 
 # ---------- 工具函数 ----------
 def parse_city_entry(entry: str) -> Tuple[str, Optional[str]]:
@@ -209,9 +226,9 @@ def get_weather_multi(cities_str: str, api_key: str,
             weather_parts.append(weather)
     return "\n\n".join(weather_parts) if weather_parts else None
 
-# ---------- 消息推送（支持自动/手动标识） ----------
-def send_markdown(webhook_url: str, title: str, content: str, auto: bool = False) -> bool:
-    footer = "🤖 钉钉日历机器人自动推送" if auto else "🤖 钉钉日历机器人手动推送"
+# ---------- 消息推送（根据是否在预定时间显示不同标识） ----------
+def send_markdown(webhook_url: str, title: str, content: str, scheduled: bool = False) -> bool:
+    footer = "🤖 钉钉日历机器人自动推送" if scheduled else "🤖 钉钉日历机器人手动推送"
     text = f"### {title}\n\n{content}\n\n---\n> {footer}\n> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     payload = {"msgtype": "markdown", "markdown": {"title": title, "text": text}, "at": {"atMobiles": [], "isAtAll": False}}
     resp = requests.post(webhook_url, json=payload, timeout=10)
@@ -239,8 +256,8 @@ def get_query_range():
 # ---------- 主函数 ----------
 def main():
     logger.info("开始执行日历推送任务")
-    auto = is_auto_run()
-    logger.info("运行模式: %s", "自动" if auto else "手动")
+    scheduled = is_scheduled_run()  # 根据时间判断是否自动运行
+    logger.info("运行模式: %s", "自动（预定时间）" if scheduled else "手动（非预定时间）")
 
     client = DingTalkCalendarClient()
     start_utc, end_utc, target_date = get_query_range()
@@ -264,7 +281,7 @@ def main():
     content = "\n\n".join(content_parts)
 
     title = f"📅 日程提醒 - {target_date.strftime('%m月%d日')}"
-    if not send_markdown(WEBHOOK_URL, title, content, auto):
+    if not send_markdown(WEBHOOK_URL, title, content, scheduled):
         sys.exit(1)
     logger.info("推送成功")
 
