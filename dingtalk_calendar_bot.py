@@ -41,7 +41,7 @@ def is_scheduled_run() -> bool:
     beijing_now = datetime.utcnow() + timedelta(hours=8)
     current_minutes = beijing_now.hour * 60 + beijing_now.minute
     scheduled_times = [8 * 60, 22 * 60]  # 08:00 和 22:00
-    tolerance = 15  # 容差分钟数
+    tolerance = 5  # 容差分钟数
     for target in scheduled_times:
         if abs(current_minutes - target) <= tolerance:
             logger.info("当前时间 %02d:%02d 在预定时间 %02d:00 附近，视为自动运行",
