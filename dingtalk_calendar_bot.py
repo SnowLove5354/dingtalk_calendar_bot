@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-钉钉订阅日历推送机器人 (GitHub Actions 版)
+企业微信订阅日历推送机器人 (GitHub Actions 版)
 功能: 根据运行时间自动推送当天/次日日程 + 多城市天气（高德）
 - 白天（<21点）：当日实时天气 + 当日定时日程（不含全天）
 - 晚上（>=21点）：次日天气预报 + 次日定时日程（不含全天）
@@ -31,7 +31,7 @@ DINGTALK_APP_KEY = get_env_or_fail("DINGTALK_APP_KEY")
 DINGTALK_APP_SECRET = get_env_or_fail("DINGTALK_APP_SECRET")
 USER_ID = get_env_or_fail("DINGTALK_USER_ID")
 CALENDAR_ID = get_env_or_fail("DINGTALK_CALENDAR_ID")
-WEBHOOK_URL = get_env_or_fail("DINGTALK_WEBHOOK_URL")
+WECOM_WEBHOOK_URL = get_env_or_fail("WECOM_WEBHOOK_URL")
 WEATHER_API_KEY = get_env_or_fail("WEATHER_API_KEY")
 WEATHER_CITIES = get_env_or_fail("WEATHER_CITIES")
 WEATHER_CITY = os.getenv("WEATHER_CITY", "")
@@ -230,11 +230,16 @@ def get_weather_multi(cities_str: str, api_key: str,
             weather_parts.append(weather)
     return "\n\n".join(weather_parts) if weather_parts else None
 
-# ---------- 消息推送（根据是否在预定时间显示不同标识） ----------
+# ---------- 消息推送（企业微信） ----------
 def send_markdown(webhook_url: str, title: str, content: str, scheduled: bool = False) -> bool:
-    footer = "🤖 钉钉日历机器人自动推送" if scheduled else "🤖 钉钉日历机器人手动推送"
-    text = f"### {title}\n\n{content}\n\n---\n> {footer}\n> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    payload = {"msgtype": "markdown", "markdown": {"title": title, "text": text}, "at": {"atMobiles": [], "isAtAll": False}}
+    footer = "🤖 企业微信日历机器人自动推送" if scheduled else "🤖 企业微信日历机器人手动推送"
+    text = f"### {title}\n\n{content}\n\n> {footer}\n> 📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "content": text
+        }
+    }
     resp = requests.post(webhook_url, json=payload, timeout=10)
     return resp.json().get("errcode") == 0
 
@@ -288,7 +293,7 @@ def main():
     content = "\n\n".join(content_parts)
 
     title = f"📅 日程提醒 - {target_date.strftime('%m月%d日')}"
-    if not send_markdown(WEBHOOK_URL, title, content, scheduled):
+    if not send_markdown(WECOM_WEBHOOK_URL, title, content, scheduled):
         sys.exit(1)
     logger.info("推送成功")
 
