@@ -1,4 +1,4 @@
-name: 钉钉日程每日推送
+name: 企业微信日程每日推送
 
 on:
   # 外部精确调度（cron-job.org 将触发此事件）
@@ -29,7 +29,7 @@ jobs:
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
           DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
-          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
           # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选
