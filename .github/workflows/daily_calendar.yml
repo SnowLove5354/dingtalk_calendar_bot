@@ -1,4 +1,4 @@
-name: 企业微信日程每日推送
+name: 日历每日推送（企业微信）
 
 on:
   # 外部精确调度（cron-job.org 将触发此事件）
@@ -30,7 +30,8 @@ jobs:
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
           DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
           WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
+          WECOM_SECRET: ${{ secrets.WECOM_SECRET }}   # 若机器人未启用加签，可不配置
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
-          # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选
+          # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选，单城市时使用
         run: python dingtalk_calendar_bot.py
