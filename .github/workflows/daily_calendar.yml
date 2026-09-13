@@ -1,4 +1,4 @@
-name: 日历每日推送（企业微信）
+name: 钉钉+企业微信 日程每日推送
 
 on:
   # 外部精确调度（cron-job.org 将触发此事件）
@@ -29,9 +29,10 @@ jobs:
           DINGTALK_APP_SECRET: ${{ secrets.DINGTALK_APP_SECRET }}
           DINGTALK_USER_ID: ${{ secrets.DINGTALK_USER_ID }}
           DINGTALK_CALENDAR_ID: ${{ secrets.DINGTALK_CALENDAR_ID }}
-          WECOM_WEBHOOK_URL: ${{ secrets.WECOM_WEBHOOK_URL }}
-          WECOM_SECRET: ${{ secrets.WECOM_SECRET }}   # 若机器人未启用加签，可不配置
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
           WEATHER_CITIES: ${{ secrets.WEATHER_CITIES }}
-          # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选，单城市时使用
+          # WEATHER_CITY: ${{ secrets.WEATHER_CITY }}  # 可选
+          # 企业微信机器人 Webhook（在群里 -> 群机器人 -> 添加机器人 -> 复制 Webhook 地址）
+          WECHAT_WORK_WEBHOOK_URL: ${{ secrets.WECHAT_WORK_WEBHOOK_URL }}
         run: python dingtalk_calendar_bot.py
