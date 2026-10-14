@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-钉钉 + 企业微信 订阅日历推送机器人 (GitHub Actions 版)
+企业微信 订阅日历推送机器人 (GitHub Actions 版)
 功能: 根据运行时间自动推送当天/次日日程 + 多城市天气（高德）
 - 白天（<21点）：当日实时天气 + 当日定时日程（不含全天）
 - 晚上（>=21点）：次日天气预报 + 次日定时日程（不含全天）
 - 自动识别是否在预设时间（08:00 或 22:00）运行，消息尾部显示对应标识
-- 同时推送钉钉机器人 与 企业微信机器人
-- 钉钉使用 markdown，企业微信使用纯文本
+- 仅推送企业微信机器人（钉钉推送已移除；日历数据仍读取钉钉日历）
+- 企业微信使用纯文本
 """
 
 import os
@@ -29,16 +29,17 @@ def get_env_or_fail(key: str) -> str:
         sys.exit(1)
     return value
 
+# 钉钉相关配置仅用于读取日历（不再用于消息推送）
 DINGTALK_APP_KEY = get_env_or_fail("DINGTALK_APP_KEY")
 DINGTALK_APP_SECRET = get_env_or_fail("DINGTALK_APP_SECRET")
 USER_ID = get_env_or_fail("DINGTALK_USER_ID")
 CALENDAR_ID = get_env_or_fail("DINGTALK_CALENDAR_ID")
-WEBHOOK_URL = get_env_or_fail("DINGTALK_WEBHOOK_URL")
+
 WEATHER_API_KEY = get_env_or_fail("WEATHER_API_KEY")
 WEATHER_CITIES = get_env_or_fail("WEATHER_CITIES")
 WEATHER_CITY = os.getenv("WEATHER_CITY", "")
 
-# 企业微信机器人 Webhook（可选；未配置则跳过企业微信推送）
+# 企业微信机器人 Webhook
 WECHAT_WORK_WEBHOOK_URL = (os.getenv("WECHAT_WORK_WEBHOOK_URL") or "").strip()
 
 # ---------- 判断是否在预设时间运行 ----------
@@ -66,7 +67,7 @@ def parse_city_entry(entry: str) -> Tuple[str, Optional[str]]:
         return parts[0].strip(), parts[1].strip() or None
     return entry, None
 
-# ---------- 钉钉 Token 管理 ----------
+# ---------- 钉钉 Token 管理（仅用于读取日历） ----------
 class DingTalkTokenManager:
     _token_info: Dict = {}
     @classmethod
@@ -88,7 +89,7 @@ class DingTalkTokenManager:
         logger.info("access_token 获取成功，有效期 %d 秒", expires_in)
         return token
 
-# ---------- 钉钉日历客户端 ----------
+# ---------- 钉钉日历客户端（仅用于读取日程） ----------
 class DingTalkCalendarClient:
     BASE_URL = "https://api.dingtalk.com/v1.0"
     def _get_headers(self):
@@ -112,7 +113,7 @@ class DingTalkCalendarClient:
         events = data.get("events") or data.get("result", {}).get("events", [])
         return events
 
-# ---------- 日程数据抽取（供两种格式复用） ----------
+# ---------- 日程数据抽取 ----------
 def extract_events(events: List[Dict]) -> List[Dict]:
     """过滤：只保留有 dateTime 的定时日程（排除全天事件），返回结构化列表。"""
     filtered = []
@@ -136,19 +137,6 @@ def extract_events(events: List[Dict]) -> List[Dict]:
             logger.debug("跳过全天日程: %s", ev.get("summary", "未命名"))
     return filtered
 
-# ---------- 日程格式化：钉钉 markdown ----------
-def format_events_markdown(items: List[Dict]) -> str:
-    if not items:
-        return "✅ 今日无定时日程安排，祝你顺利！🎉"
-    lines = []
-    for i, ev in enumerate(items, 1):
-        lines.append(
-            f"**{i}. {ev['title']}**  \n"
-            f"⏰ {ev['time_range']}  \n"
-            f"📍 {ev['location'] or '未指定地点'}"
-        )
-    return "\n\n".join(lines)
-
 # ---------- 日程格式化：企业微信纯文本 ----------
 def format_events_plain(items: List[Dict]) -> str:
     if not items:
@@ -165,7 +153,7 @@ def format_events_plain(items: List[Dict]) -> str:
 # ---------- 天气查询（高德）----------
 def get_weather(city: str, api_key: str, display_name: Optional[str] = None,
                 target_date: Optional[datetime.date] = None) -> Optional[Dict]:
-    """返回结构化天气 dict，由调用方决定渲染成 markdown 或纯文本。"""
+    """返回结构化天气 dict。"""
     if not api_key or not city:
         return None
     today = datetime.now().date()
@@ -247,26 +235,6 @@ def get_weather_multi(cities_str: str, api_key: str,
             result.append(weather)
     return result
 
-# ---------- 天气格式化：钉钉 markdown ----------
-def format_weather_markdown(w: Dict) -> str:
-    header = f"🌤 **{w['city_name']}天气**"
-    if w.get("label"):
-        header = f"🌤 **{w['city_name']}天气 ({w['label']})**"
-    lines = [header]
-    if w.get("night_temp"):
-        lines.append(f"   🌡 温度：{w['temperature']}℃（夜间{w['night_temp']}℃）")
-    else:
-        lines.append(f"   🌡 温度：{w['temperature']}℃")
-    lines.append(f"   ☁️ 天气：{w['weather']}")
-    if w.get("humidity"):
-        lines.append(f"   💧 湿度：{w['humidity']}%")
-    lines.append(f"   🌬 风力：{w['wind_direction']}{w['wind_power']}级")
-    if w.get("report_time"):
-        lines.append(f"   🕒 更新：{w['report_time']}")
-    if w.get("date_str"):
-        lines.append(f"   📅 {w['date_str']}")
-    return "  \n".join(lines)
-
 # ---------- 天气格式化：企业微信纯文本 ----------
 def format_weather_plain(w: Dict) -> str:
     header = f"🌤 {w['city_name']}天气"
@@ -287,30 +255,11 @@ def format_weather_plain(w: Dict) -> str:
         lines.append(f"   📅 {w['date_str']}")
     return "\n".join(lines)
 
-# ---------- 消息推送：钉钉（markdown） ----------
-def send_dingtalk(webhook_url: str, title: str, text: str) -> bool:
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {"title": title, "text": text},
-        "at": {"atMobiles": [], "isAtAll": False},
-    }
-    try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
-        data = resp.json()
-        if data.get("errcode") == 0:
-            logger.info("钉钉推送成功")
-            return True
-        logger.error("钉钉推送失败: %s", data)
-        return False
-    except Exception as e:
-        logger.error("钉钉推送异常: %s", e)
-        return False
-
 # ---------- 消息推送：企业微信（纯文本） ----------
 def send_wechat_work(webhook_url: str, text: str) -> bool:
     if not webhook_url:
-        logger.info("未配置 WECHAT_WORK_WEBHOOK_URL，跳过企业微信推送")
-        return True
+        logger.error("未配置 WECHAT_WORK_WEBHOOK_URL，无法推送")
+        return False
     # 企业微信 text 消息内容上限 2048 字节，超出则安全截断
     encoded = text.encode("utf-8")
     if len(encoded) > 2048:
@@ -378,21 +327,6 @@ def main():
     footer = "🤖 日历机器人自动推送" if scheduled else "🤖 日历机器人手动推送"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ---------- 钉钉 markdown 版本 ----------
-    ding_parts = []
-    if weather_list:
-        ding_parts.append("\n\n".join(format_weather_markdown(w) for w in weather_list))
-        ding_parts.append("")
-    ding_parts.append("**📅 日程安排**  \n" + format_events_markdown(event_items))
-    ding_content = "\n\n".join(ding_parts)
-    ding_text = (
-        f"### {title}\n\n"
-        f"{ding_content}\n\n"
-        f"---\n"
-        f"> {footer}\n"
-        f"> 📅 {now_str}"
-    )
-
     # ---------- 企业微信纯文本版本 ----------
     wechat_parts = []
     if weather_list:
@@ -409,17 +343,12 @@ def main():
         f"📅 {now_str}"
     )
 
-    # ---------- 同时推送 ----------
-    ding_ok = send_dingtalk(WEBHOOK_URL, title, ding_text)
+    # ---------- 推送企业微信 ----------
     wechat_ok = send_wechat_work(WECHAT_WORK_WEBHOOK_URL, wechat_text)
-
-    if not ding_ok:
-        logger.error("钉钉推送失败")
-        sys.exit(1)
-    if WECHAT_WORK_WEBHOOK_URL and not wechat_ok:
+    if not wechat_ok:
         logger.error("企业微信推送失败")
         sys.exit(1)
-    logger.info("全部推送成功")
+    logger.info("推送成功")
 
 if __name__ == "__main__":
     main()
